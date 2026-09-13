@@ -40,6 +40,9 @@
 #include "LayerSnapshotBuilder.h"
 #include "RenderResourceCache.h"
 #include "ShaderRegistry.h"
+#include <cutils/properties.h>
+#include <algorithm>
+#include <cmath>
 #include "TimeStats/TimeStats.h"
 #include "Tracing/TransactionTracing.h"
 
@@ -995,17 +998,34 @@ void LayerSnapshotBuilder::updateSnapshot(LayerSnapshot& snapshot, const Args& a
                  layer_state_t::eBackgroundBlurScaleChanged |
                  layer_state_t::eBlurRegionsChanged |
                  layer_state_t::eAlphaChanged)) {
-        snapshot.backgroundBlurRadius = args.supportsBlur
+        int baseRadius = args.supportsBlur
                 ? static_cast<int>(parentSnapshot.color.a * (float)requested.backgroundBlurRadius)
                 : 0;
+        int intensity = property_get_int32("persist.sys.custom_blur_intensity", 50);
+        if (baseRadius > 0) {
+            if (intensity <= 0) {
+                baseRadius = 0;
+            } else if (intensity != 50) {
+                baseRadius = std::max(1, static_cast<int>(std::round(baseRadius * (intensity / 50.0f))));
+            }
+        }
+        snapshot.backgroundBlurRadius = baseRadius;
         snapshot.backgroundBlurScale = args.supportsBlur
                 ? requested.backgroundBlurScale
                 : 1.0f;
         // args.supportsBlur can't be used here to remove blur region requests, because otherwise
         // apps will break.
-        snapshot.blurRegions = requested.blurRegions;
-        for (auto& region : snapshot.blurRegions) {
-            region.alpha = region.alpha * snapshot.color.a;
+        if (intensity <= 0) {
+            snapshot.blurRegions.clear();
+        } else {
+            snapshot.blurRegions = requested.blurRegions;
+            for (auto& region : snapshot.blurRegions) {
+                float alphaScale = (intensity == 50) ? 1.0f : (intensity / 50.0f);
+                region.alpha = region.alpha * snapshot.color.a * alphaScale;
+                if (region.blurRadius > 0 && intensity != 50) {
+                    region.blurRadius = std::max(1u, static_cast<uint32_t>(std::round(region.blurRadius * (intensity / 50.0f))));
+                }
+            }
         }
     }
 
